@@ -1,4 +1,6 @@
 import express from "express";
+// import session from 'express-session';
+// import passport from "passport";
 
 const app = express();
 app.use(express.json({ limit: "16kb" }));
@@ -19,5 +21,16 @@ app.use((err, req, res, next) => {
       });
    }
 });
+
+// app.use(session({
+//    secret: process.env.SECRET_KEY,
+//    resave: false,
+//    saveUninitialized: false,
+// }))
+
+// Integrate passportjs into myy express app
+// app.use(passport.initialize());
+// app.use(passport.session());
+
 
 export { app };

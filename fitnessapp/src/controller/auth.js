@@ -3,6 +3,11 @@ import otpGenerator from "otp-generator";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import mailSender from "../utils/mailSender.js";
+import { app } from "../app.js"
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+
+import crypto from "crypto"
 
 import User from "../model/auth.js";
 import OTP from "../model/otp.js";
@@ -11,7 +16,7 @@ import OTP from "../model/otp.js";
 dotenv.config();
 
 // send OTP for email verification
-export const sendEmail = async (req, res) => {
+export const sendOTP = async (req, res) => {
     try {
         const { email } = req.body;
 
@@ -32,7 +37,7 @@ export const sendEmail = async (req, res) => {
             specialChars: false,
         })
 
-        const result = await otp.findOne({ otp: otp })
+        const result = await OTP.findOne({ otp: otp })
         console.log("otp result", result)
 
         // makesure otp is unique (generate new otp if last otp already exists in db)
@@ -176,8 +181,13 @@ export const login = async (req, res) => {
                     {
                         expires: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
                         httpOnly: true,
-                    }
-                )
+                    }).status(200).json({
+                        success: true,
+                        token,
+                        user,
+                        message: `User Login Success`,
+                    })
+
         } else {
             return res.status(401).json({
                 success: false,
@@ -186,6 +196,7 @@ export const login = async (req, res) => {
         }
 
     } catch (error) {
+        console.log("login-error", error.message)
         return res.status(500).json({
             success: false,
             message: "Error occured while login",
@@ -197,7 +208,8 @@ export const login = async (req, res) => {
 export const changePassword = async (req, res) => {
     try {
         // fetch data
-        const userDetails = await User.findById(req.user.id)
+        const userDetails = await User.findById(req.body.id)
+       
         const { oldPassword, newPassword } = req.body;
 
         const isPassMatched = await bcrypt.compare(oldPassword, userDetails.password);
@@ -210,18 +222,19 @@ export const changePassword = async (req, res) => {
 
         // if password got match then simply update password in db after hashing
 
-        const hashNewPassword = bcrypt.hash(newPassword, 10)
+        const hashNewPassword = await bcrypt.hash(newPassword, 10)
 
-        const updatePassword = await User.findByIdAndUpdate(userDetails._id, { password: hashNewPassword }, { new: true })
+        const updateUserData = await User.findByIdAndUpdate(userDetails._id, { password: hashNewPassword }, { new: true })
 
         // after updating password lets notify user for this account activity 
 
         try {
             // email, title, body
-            const emailResponse = await mailSender(userDetails.email,
+            const emailResponse = await mailSender(updateUserData.email,
                 "Password for your account has been updated",
-                `Password updated successfully for ${userDetails.firstName} ${userDetails.lastName}`
+                `Password updated successfully for ${updateUserData.firstName} ${updateUserData.lastName}`
             )
+
         } catch (error) {
             return res.status(500).json({
                 success: false,
@@ -233,20 +246,173 @@ export const changePassword = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Password updated Successfully Now",
+            updateUserData
         })
     } catch (error) {
         return res.status(500).json({
             success: false,
             message: "Error occurred while updating password",
-            error: error.message,
+            error: error,
         })
     }
 }
 
-export const resetToken = async(req,res) => {
-    try{
+export const resetToken = async (req, res) => {
+    try {
+        // token genrate krke then frontend url m token attach krke email pr send krenge.
+
+        // steps: 1) fetch email
+        const { email } = req.body;
+        //2) validation
+        const user = await User.findOne({ email: email });
+        if (!user) {
+            return res.json({
+                success: false,
+                message: `This Email: ${email} is not Registered With Us Enter a Valid Email `,
+            })
+        }
+        // 3) create token
+        const token = crypto.randomBytes(20).toString("hex");
+        // 4) create entry in db
+        const updateUserDetails = await User.findOneAndUpdate(
+            { email: email },
+            {
+                token: token,
+                // with this user will be able to resetPassword within 1hr only.
+                resetPasswordExpires: Date.now()
+            }, { new: true })
+        // 5) create frontend url by attached above token
+        const url = `http://localhost:5173/updatePasswoed/${token}`;
+        // 6) send this url on email 
+        await mailSender(
+            email,
+            "Password Reset",
+            `Your link for email verification is ${url}.Please click this url to reset your password.`
+        )
+
+        res.json({
+            success: true,
+            message:
+                "Email Sent Successfully, Please Check Your Email to Continue Further",
+            token: token    
+        })
 
     } catch (error) {
-
+        return res.json({
+            error: error.message,
+            success: false,
+            message: `Some Error in Sending the Reset Message`,
+        })
     }
 }
+
+export const resetPassword = async (req, res) => {
+    try {
+        // Here user will directly send password, confirmPassword then update these in User database
+
+        //steps 1) datafetch
+        const { token, password, confirmPassword } = req.body
+        // 2) validation + password hashed
+        if (password !== confirmPassword) {
+            return res.json({
+                success: false,
+                message: "Password and Confirm Password Does not Match",
+            })
+        }
+        //check token validity
+        const userDetails = await User.findOne({ token: token });
+        if (!userDetails) {
+            return res.json({
+                success: false,
+                message: "Token is Invalid",
+            })
+        }
+        // check token expire time
+        if ((userDetails.resetPasswordExpires) > Date.now()) {
+            return res.status(403).json({
+                success: false,
+                message: `Token is Expired, Please Regenerate Your Token`,
+            })
+        }
+        // hash the password now 
+        const encryptedPassword = await bcrypt.hash(password, 10)
+        // 3) db entry
+        await User.findOneAndUpdate(
+            { token: token },
+            {
+                password: encryptedPassword
+            },
+            { new: true }
+        )
+        // 4) response send
+        res.json({
+            success: true,
+            message: `Password Reset Successful`,
+        })
+    } catch (error) {
+        return res.json({
+            error: error.message,
+            success: false,
+            message: `Some Error in Updating the Password`,
+        })
+    }
+}
+
+
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: process.env.CALLBACK_URL,
+    passReqToCallback: true // Pass the entire request object to callback
+}, (req, accessToken, refreshToken, profile, done) => {
+    // User information is in profile here
+    // You can create or associate a user record in your database here
+    console.log(profile); // For debugging purposes, log the user profile
+
+    // Check if user is already registered in your database
+    // Example:
+    User.findOne({ googleId: profile.id }, (err, user) => {
+        if (err) {
+            return done(err);
+        }
+        if (user) {
+            //         // If user already exists, you might update their details if necessary
+            user.name = profile.displayName;
+            return done(null, user);
+        } else {
+            //         // If user does not exist, create a new user record in your database
+            const newUser = new User({
+                googleId: profile.id,
+                username: profile.displayName,
+                //             // Add other relevant user properties here
+            });
+            newUser.save((err) => {
+                if (err) {
+                    return done(err);
+                }
+                return done(null, newUser);
+            });
+        }
+    });
+
+    // For demonstration purposes, we'll simply redirect the user to a protected page
+    return done(null, profile); // Pass the user profile to the next middleware
+}));
+
+// Route to handle the Google authentication callback
+// app.get('/auth/google/callback', passport.authenticate('google', { failureRedirect: '/login' }), (req, res) => {
+//     // If authentication is successful, redirect the user to a protected page
+//     res.redirect('/dashboard');
+// });
+
+
+// passport.serializeUser((user, done) => {
+//     done(null, user.id);
+// });
+
+// passport.deserializeUser((id, done) => {
+//     // find the user by id in db
+//     User.findById(id, (err, user) => {
+//         done(err, user);
+//     })
+// })

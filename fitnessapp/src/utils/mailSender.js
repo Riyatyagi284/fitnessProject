@@ -2,11 +2,17 @@ import nodemailer from "nodemailer";
 
 const mailSender = async (email, title, body) => {
     try {
+        let testAccount = await nodemailer.createTestAccount();
+
         let transporter = nodemailer.createTransport({
-            host: process.env.MAIL_HOST,
+            host: 'smtp.ethereal.email',
+            //host: process.env.MAIL_HOST,
+            port: 587,
             auth: {
-                user: process.env.MAIL_USER,
-                pass: process.env.MAIL_PASS,
+                user: 'kraig.huels@ethereal.email',
+                pass: 'mqUYfgxgfKH8dFe1bc',
+                // user: process.env.MAIL_USER,
+                // pass: process.env.MAIL_PASS,
             },
             secure: false,
         })
